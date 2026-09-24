@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="<%= lang %>">
+
 <head>
   <meta charset="UTF-8" />
   <title>Compare Filtered files vs San Diego PACE Rough Draft</title>
@@ -9,49 +10,52 @@
   <!-- Tus estilos de marca -->
   <link rel="stylesheet" href="/style.css" />
 </head>
+
 <body>
   <main class="container">
 
-  <!-- 🔹 Nuevo bloque de logo centrado -->
-  <div class="logo-center">
-    <img src="/CFS-Logo-Color.webp" alt="CFS Logo" class="logo-main" />
-  </div>
+    <!-- 🔹 Nuevo bloque de logo centrado -->
+    <div class="logo-center">
+      <img src="/CFS-Logo-Color.webp" alt="CFS Logo" class="logo-main" />
+    </div>
 
-  <header class="page-header">
-    <div class="header-left">
-      <h1 id="t_title">Compare Filtered files vs San Diego PACE Rough Draft</h1>
-    </div>
-    <div class="header-right">
-      <label class="lang-select">
-        <span id="t_language">Idioma</span>
-        <select id="langSelect">
-          <option value="es" <%= lang==='es'?'selected':'' %>>Español</option>
-          <option value="en" <%= lang==='en'?'selected':'' %>>English</option>
-        </select>
-      </label>
-    </div>
-  </header>
+    <header class="page-header">
+      <div class="header-left">
+        <h1 id="t_title">Compare Filtered files vs San Diego PACE Rough Draft</h1>
+      </div>
+      <div class="header-right">
+        <label class="lang-select">
+          <span id="t_language">Idioma</span>
+          <select id="langSelect">
+            <option value="es" <%=lang==='es' ?'selected':'' %>>Español</option>
+            <option value="en" <%=lang==='en' ?'selected':'' %>>English</option>
+          </select>
+        </label>
+      </div>
+    </header>
 
     <p id="t_hint" class="hint">
       Upload filters.csv, draft.csv and specialty.csv files
     </p>
-  <!-- 🔹 Nueva sección de instrucciones bilingüe -->
-  <section class="card instructions-card">
-    <h2 id="t_instructions_title">Instructions / Instrucciones</h2>
-    <ol id="t_instructions_list">
-      <li>Locate and Save your Rough Draft Excel sheet as a new CSV file, we suggest you to use an easy naming convention e.g. <strong>20251204_Draft.CSV</strong></li>
-      <li>Locate and Save your R3 Excel sheet as a new CSV file, we suggest you to use an easy naming convention e.g. <strong>20251204_Filters.CSV</strong></li>
-      <li>Locate the CSV specialty appointments file processed by the Manifest Parser.</li>
-      <li>Once you have located all the 3 CSV files, proceed with the upload, after that, click on the "Process data" button.</li>
-    </ol>
+    <!-- 🔹 Nueva sección de instrucciones bilingüe -->
+    <section class="card instructions-card">
+      <h2 id="t_instructions_title">Instructions / Instrucciones</h2>
+      <ol id="t_instructions_list">
+        <li>Locate and Save your Rough Draft Excel spread sheet as a new CSV file, we suggest you to use an easy naming
+          convention e.g. <strong>20251204_Draft.CSV</strong></li>
+        <li>Locate the CSV specialty appointments file processed by the Manifest Parser.</li>
+        <li>Once you have located all the 2 CSV files, proceed with the upload, after that, click on the "Process data"
+          button.</li>
+      </ol>
 
-    <ol id="t_instructions_list_es" style="display:none;">
-      <li>Localiza y Guarda tu hoja de Excel Rough Draft como un nuevo archivo CSV; te sugerimos usar una convención de nombre sencilla, por ejemplo <strong>20251204_Draft.CSV</strong></li>
-      <li>Localiza y Guarda tu hoja R3 de Excel como un nuevo archivo CSV; te sugerimos usar una convención de nombre sencilla, por ejemplo <strong>20251204_Filters.CSV</strong></li>
-      <li>Ubica el archivo CSV de citas de Specialty procesado por el Manifest Parser.</li>
-      <li>Una vez localizados los 3 archivos CSV, procede a subirlos, despues de subirlos presiona el botón "Procesar datos".</li>
-    </ol>
-  </section>
+      <ol id="t_instructions_list_es" style="display:none;">
+        <li>Localiza y Guarda tu hoja de Excel Rough Draft como un nuevo archivo CSV; te sugerimos usar una convención
+          de nombre sencilla, por ejemplo <strong>20251204_Draft.CSV</strong></li>
+        <li>Ubica el archivo CSV de citas de Specialty procesado por el Manifest Parser.</li>
+        <li>Una vez localizados los 2 archivos CSV, procede a subirlos, despues de subirlos presiona el botón "Procesar
+          datos".</li>
+      </ol>
+    </section>
 
 
 
@@ -94,7 +98,8 @@
       <article class="result-block">
         <header class="result-head">
           <h3 id="t_res1_title">trips_In_Filters_Not_In_Specialty.csv</h3>
-          <a id="downloadCsv1" class="secondary" href="#" download="trips_In_Filters_Not_In_Specialty.csv" style="display:none;">
+          <a id="downloadCsv1" class="secondary" href="#" download="trips_In_Filters_Not_In_Specialty.csv"
+            style="display:none;">
             ⬇ <span id="t_download">Descargar CSV</span>
           </a>
         </header>
@@ -105,7 +110,8 @@
       <article class="result-block">
         <header class="result-head">
           <h3 id="t_res2_title">trips_In_Specialty_Not_In_Filters.csv</h3>
-          <a id="downloadCsv2" class="secondary" href="#" download="trips_In_Specialty_Not_In_Filters.csv" style="display:none;">
+          <a id="downloadCsv2" class="secondary" href="#" download="trips_In_Specialty_Not_In_Filters.csv"
+            style="display:none;">
             ⬇ <span id="t_download2">Descargar CSV</span>
           </a>
         </header>
@@ -141,4 +147,5 @@
   </script>
   <script src="/script.js"></script>
 </body>
+
 </html>
