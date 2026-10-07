@@ -577,6 +577,6 @@ app.post(
 );
 
 const PORT = process.env.PORT || 3200;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`CSV Diff app V2 corriendo en http://localhost:${PORT}`);
 });
