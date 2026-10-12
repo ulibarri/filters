@@ -1,7 +1,7 @@
 {
   "name": "csv-diff-app-v2",
   "version": "2.0.0",
-  "description": "V2: Upload Draft (xlsx/xls/csv) + Specialty (csv). The app generates Filters.csv from Draft (removing Glenner/Type-list/dialysis rows) and compares it against Specialty by CSN. Independent project from V1 (production).",
+  "description": "V2: Upload Draft (xlsx/xls/csv) + Specialty (csv). The app generates Filters.csv from Draft (removing Glenner/Type-list/dialysis rows) and compares it against Specialty by CSN. Independent project from V1 (production). Also exposes a REST API (/api/*) for Teams/Copilot integration.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "csv-parse": "^5.6.0",
+    "dotenv": "^16.4.5",
     "ejs": "^3.1.10",
     "express": "^4.19.2",
     "multer": "^1.4.5-lts.1",
