@@ -20,7 +20,10 @@ const i18n = {
     done: 'Listo',
     draftLabel: 'Draft (.xlsx, .xls o .csv)',
     filtersTitle: 'Filters.csv (generado)',
-    downloadFilters: 'Descargar Filters.csv generado'
+    downloadFilters: 'Descargar Filters.csv generado',
+    publishTeams: 'Publicar en Teams',
+    publishing: 'Publicando en Teams...',
+    publishedOk: 'Publicado en Teams ✅'
   },
   en: {
     title: 'Compare Filtered trips vs Specialty CSV trips',
@@ -43,7 +46,10 @@ const i18n = {
     done: 'Done',
     draftLabel: 'Draft (.xlsx, .xls or .csv)',
     filtersTitle: 'Filters.csv (generated)',
-    downloadFilters: 'Download generated Filters.csv'
+    downloadFilters: 'Download generated Filters.csv',
+    publishTeams: 'Publish to Teams',
+    publishing: 'Publishing to Teams...',
+    publishedOk: 'Published to Teams ✅'
   }
 };
 
@@ -68,6 +74,7 @@ function applyLang(lang) {
   document.getElementById('t_draft_label').textContent = d.draftLabel;
   document.getElementById('t_filters_title').textContent = d.filtersTitle;
   document.getElementById('t_download_filters').textContent = d.downloadFilters;
+  document.getElementById('t_publish_teams_btn').textContent = d.publishTeams;
 
   // Búsqueda
   document.getElementById('t_step3').textContent = d.step3;
@@ -216,6 +223,37 @@ const searchTable = document.getElementById('searchTable');
 // Índice de Draft (se llena tras /process)
 let DRAFT_INDEX = [];
 
+// runId del último /process exitoso — se usa para "Publicar en Teams".
+// Se limpia en cada nuevo submit para no publicar un run obsoleto.
+let CURRENT_RUN_ID = null;
+
+const publishTeamsBtn = document.getElementById('publishTeamsBtn');
+const publishStatus = document.getElementById('publishStatus');
+
+publishTeamsBtn.addEventListener('click', async () => {
+  const lang = (document.getElementById('langSelect').value || 'es');
+  if (!CURRENT_RUN_ID) return;
+
+  publishTeamsBtn.disabled = true;
+  publishStatus.textContent = i18n[lang].publishing;
+
+  try {
+    const res = await fetch('/api/publish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId: CURRENT_RUN_ID })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Unexpected error');
+    publishStatus.textContent = i18n[lang].publishedOk;
+  } catch (err) {
+    publishStatus.textContent = i18n[lang].errorPrefix + err.message;
+    // Reactivar el botón para reintentar, salvo que el run haya expirado
+    // (ya no existe en memoria): en ese caso hay que volver a procesar.
+    publishTeamsBtn.disabled = false;
+  }
+});
+
 function renderTable(el, rows) {
   el.innerHTML = '';
   el.classList.remove('empty');
@@ -347,6 +385,12 @@ form.addEventListener('submit', async (e) => {
   table2.textContent = i18n[lang].empty;
   searchTable.textContent = i18n[lang].empty;
 
+  // El botón "Publicar en Teams" solo se habilita tras revisar un resultado
+  // nuevo: un run viejo nunca debe quedar publicable por accidente.
+  CURRENT_RUN_ID = null;
+  publishTeamsBtn.disabled = true;
+  publishStatus.textContent = '—';
+
   try {
     const fd = new FormData(form);
     const res = await fetch('/process', { method: 'POST', body: fd });
@@ -389,6 +433,11 @@ form.addEventListener('submit', async (e) => {
 
     // Índice para búsqueda
     DRAFT_INDEX = data?.meta?.draftIndex || [];
+
+    // Habilita "Publicar en Teams" solo después de que el usuario tiene los
+    // resultados renderizados frente a sí (nunca se publica automáticamente).
+    CURRENT_RUN_ID = data.runId || null;
+    publishTeamsBtn.disabled = !CURRENT_RUN_ID;
 
     // --- BÚSQUEDA AUTOMÁTICA TRAS "Procesar" ---
     // Criterios: Patient="Caro" y PACE MRN="SDP10035365"

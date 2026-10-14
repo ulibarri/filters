@@ -3,6 +3,9 @@
   "version": "2.0.0",
   "description": "V2: Upload Draft (xlsx/xls/csv) + Specialty (csv). The app generates Filters.csv from Draft (removing Glenner/Type-list/dialysis rows) and compares it against Specialty by CSN. Independent project from V1 (production). Also exposes a REST API (/api/*) for Teams/Copilot integration.",
   "main": "server.js",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"

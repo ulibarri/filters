@@ -314,8 +314,15 @@ app.post(
       if (!req.files?.draft?.[0] || !req.files?.specialty?.[0]) {
         return res.status(400).json({ error: 'Faltan archivos. Sube draft (xlsx/xls/csv) y specialty.csv.' });
       }
+      // Se crea un run (igual que /api/process) para que la página web también
+      // pueda usar /api/publish después de que el usuario revise los resultados.
+      const run = createRun({
+        draftFilename: req.files.draft[0].originalname,
+        specialtyFilename: req.files.specialty[0].originalname
+      });
       const result = processFiles(req.files.draft[0], req.files.specialty[0]);
-      res.json(result);
+      touchRun(run, { status: 'completed', result });
+      res.json({ runId: run.id, ...result });
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: 'Error procesando los archivos. Verifica encabezados y formato (xlsx/xls/csv).' });
@@ -336,8 +343,14 @@ const authMiddleware = (req, res, next) => {
 app.use('/api', authMiddleware);
 
 // ---- Runs en memoria (igual que el resto de la app: sin base de datos) ----
+// Render Free tier suspende el servicio tras ~15 min sin tráfico y lo reinicia
+// en el próximo request; cualquier redeploy también reinicia el proceso. En
+// ambos casos este Map se vacía, así que un runId previo deja de existir aunque
+// no haya pasado RUN_TTL_MS. Por eso cualquier lookup que no encuentre el run
+// responde 410 (no 404): el resultado existió pero ya no está disponible.
 const RUNS = new Map();
 const RUN_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const RUN_EXPIRED_MESSAGE = 'Este resultado expiró; vuelve a procesar los archivos.';
 
 function createRun(input) {
   const id = crypto.randomUUID();
@@ -441,7 +454,7 @@ app.post('/api/process', upload.fields([
 // GET /api/status/{runId}
 app.get('/api/status/:runId', (req, res) => {
   const run = RUNS.get(req.params.runId);
-  if (!run) return res.status(404).json({ error: 'runId no encontrado.' });
+  if (!run) return res.status(410).json({ error: RUN_EXPIRED_MESSAGE });
   res.json({
     runId: run.id,
     status: run.status,
@@ -456,7 +469,7 @@ app.get('/api/status/:runId', (req, res) => {
 // GET /api/summary/{runId}
 app.get('/api/summary/:runId', (req, res) => {
   const run = RUNS.get(req.params.runId);
-  if (!run) return res.status(404).json({ error: 'runId no encontrado.' });
+  if (!run) return res.status(410).json({ error: RUN_EXPIRED_MESSAGE });
   if (run.status !== 'completed') {
     return res.status(409).json({ runId: run.id, status: run.status, error: run.error || 'El run todavía no está completado.' });
   }
@@ -481,18 +494,51 @@ app.get('/api/summary/:runId', (req, res) => {
   });
 });
 
-// GET /api/exceptions/{runId}?type=missingInSpecialty|missingInFilters (opcional)
+// Campos permitidos para filtrar excepciones vía ?field=&value= — son las únicas
+// columnas que expone la proyección de Draft usada en missingInSpecialty /
+// missingInFilters (ver getDraftProjection). El match es "contiene" (substring),
+// sin distinguir mayúsculas/minúsculas, igual que la búsqueda de la Sección 3 web.
+const EXCEPTION_SEARCH_FIELDS = ['PACE MRN', 'Patient', 'Patient Address', 'Time'];
+
+function matchesFieldValue(row, field, value) {
+  const cell = String(row[field] ?? '').toLowerCase();
+  return cell.includes(String(value).toLowerCase().trim());
+}
+
+// GET /api/exceptions/{runId}?type=missingInSpecialty|missingInFilters&field=<campo>&value=<valor>
+// - type (opcional): limita a una de las dos categorías; si se omite, regresa ambas.
+// - field/value (opcionales, deben venir juntos): filtran las filas devueltas.
+//   field debe ser uno de EXCEPTION_SEARCH_FIELDS: 'PACE MRN', 'Patient',
+//   'Patient Address' o 'Time'.
 app.get('/api/exceptions/:runId', (req, res) => {
   const run = RUNS.get(req.params.runId);
-  if (!run) return res.status(404).json({ error: 'runId no encontrado.' });
+  if (!run) return res.status(410).json({ error: RUN_EXPIRED_MESSAGE });
   if (run.status !== 'completed') {
     return res.status(409).json({ runId: run.id, status: run.status, error: run.error || 'El run todavía no está completado.' });
   }
+
+  const { type, field, value } = req.query;
+
+  if ((field && !value) || (!field && value)) {
+    return res.status(400).json({
+      error: 'Para filtrar por campo debes enviar "field" y "value" juntos.',
+      allowedFields: EXCEPTION_SEARCH_FIELDS
+    });
+  }
+  if (field && !EXCEPTION_SEARCH_FIELDS.includes(field)) {
+    return res.status(400).json({
+      error: `Campo "${field}" no permitido para filtrar.`,
+      allowedFields: EXCEPTION_SEARCH_FIELDS
+    });
+  }
+
   const r = run.result;
-  const type = req.query.type;
+  const applyFilter = (rows) => (field ? rows.filter(row => matchesFieldValue(row, field, value)) : rows);
+
   const payload = { runId: run.id };
-  if (!type || type === 'missingInSpecialty') payload.missingInSpecialty = r.trips_In_Filters_Not_In_Specialty;
-  if (!type || type === 'missingInFilters') payload.missingInFilters = r.trips_In_Specialty_Not_In_Filters;
+  if (!type || type === 'missingInSpecialty') payload.missingInSpecialty = applyFilter(r.trips_In_Filters_Not_In_Specialty);
+  if (!type || type === 'missingInFilters') payload.missingInFilters = applyFilter(r.trips_In_Specialty_Not_In_Filters);
+  if (field) payload.filter = { field, value };
   res.json(payload);
 });
 
@@ -500,7 +546,7 @@ app.get('/api/exceptions/:runId', (req, res) => {
 // Descarga directa del CSV de un run completado — usado por los links del publish a Teams.
 app.get('/api/files/:runId/:which', (req, res) => {
   const run = RUNS.get(req.params.runId);
-  if (!run) return res.status(404).json({ error: 'runId no encontrado.' });
+  if (!run) return res.status(410).json({ error: RUN_EXPIRED_MESSAGE });
   if (run.status !== 'completed') return res.status(409).json({ error: 'El run todavía no está completado.' });
 
   const r = run.result;
@@ -534,13 +580,22 @@ function buildTeamsMessage(run, baseUrl) {
       {
         type: 'FactSet',
         facts: [
+          { title: 'Fecha', value: new Date(run.createdAt).toISOString() },
           { title: 'Draft', value: `${r.draftRowCount} filas` },
           { title: 'Specialty', value: `${r.specialtyRowCount} filas` },
           { title: 'Filters generado', value: `${r.filtersRowCount} trips` },
           { title: 'En Filters, no en Specialty', value: String(r.trips_In_Filters_Not_In_Specialty.length) },
           { title: 'En Specialty, no en Filters', value: String(r.trips_In_Specialty_Not_In_Filters.length) },
-          { title: 'Prefijo de fecha', value: prefix }
+          { title: 'Prefijo de fecha (Visit Date)', value: prefix }
         ]
+      },
+      {
+        type: 'TextBlock',
+        text: '⚠️ Links disponibles temporalmente',
+        weight: 'bolder',
+        isSubtle: true,
+        size: 'small',
+        wrap: true
       }
     ],
     actions: [
@@ -563,7 +618,7 @@ app.post('/api/publish', async (req, res) => {
   if (!runId) return res.status(400).json({ error: 'Falta "runId" en el body.' });
 
   const run = RUNS.get(runId);
-  if (!run) return res.status(404).json({ error: 'runId no encontrado.' });
+  if (!run) return res.status(410).json({ error: RUN_EXPIRED_MESSAGE });
   if (run.status !== 'completed') {
     return res.status(409).json({ error: `El run está en estado "${run.status}", no se puede publicar hasta que esté "completed".` });
   }
