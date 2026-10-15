@@ -14,6 +14,23 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 } // 25MB por archivo
 });
 
+// ---------- Config de la tarjeta de Teams / verificación de participante ----------
+// Participante a verificar automáticamente en cada run (tarjeta de Teams + búsqueda
+// automática de la Sección 3 de la web). Configurable por entorno (ver .env.example).
+const TARGET_PARTICIPANT = process.env.TARGET_PARTICIPANT || 'MARIA CARO';
+
+// Columnas mostradas en las tablas de la tarjeta de Teams (máximo 5). El modelo de
+// datos actual (ver getDraftProjection) solo expone estas 4 columnas para identificar
+// un viaje — no hay un ID de viaje ni origen/destino separados del Draft.
+const TEAMS_CARD_COLUMNS = ['PACE MRN', 'Patient', 'Patient Address', 'Time'];
+
+// Filas máximas por tabla de resultados antes de truncar (se reduce más si la
+// tarjeta completa excede MAX_CARD_BYTES).
+const MAX_TABLE_ROWS = 15;
+
+// Límite duro de Teams/Power Automate para el tamaño de una Adaptive Card.
+const MAX_CARD_BYTES = 28 * 1024;
+
 // JSON solo se usa para la API (/api/process con base64) y no estorba a multipart/form-data.
 app.use(express.json({ limit: '30mb' }));
 
@@ -23,7 +40,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/', (req, res) => {
   const lang = (req.query.lang === 'en' ? 'en' : 'es');
-  res.render('index', { lang });
+  res.render('index', { lang, targetParticipant: TARGET_PARTICIPANT });
 });
 
 // ---------- utils ----------
@@ -116,6 +133,22 @@ function toCsv(rows) {
   const head = headers.map(esc).join(',');
   const body = rows.map(r => headers.map(h => esc(r[h])).join(',')).join('\n');
   return `${head}\n${body}`;
+}
+
+// Normaliza un nombre de participante para comparar sin importar mayúsculas/
+// minúsculas, acentos, comas o el orden de nombre/apellido: quita diacríticos,
+// pasa a minúsculas, trata comas como espacios, y ordena los tokens
+// alfabéticamente. Así "CARO, MARIA", "Maria Caro" y "maría   caro" normalizan
+// al mismo valor y se pueden comparar con ===.
+function normalizeNameForMatch(raw) {
+  const s = String(raw == null ? '' : raw)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/,/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!s) return '';
+  return s.split(' ').filter(Boolean).sort().join(' ');
 }
 
 function computePatientFromDraft(row) {
@@ -295,6 +328,9 @@ function processFiles(draftFile, specialtyFile) {
     filtersRowCount: filtersRows.length,
     draftRowCount: draftRows.length,
     specialtyRowCount: specialtyRows.length,
+    // Filters.csv generado, ya proyectado — lo usa la verificación de participante
+    // de la tarjeta de Teams (busca en Filters además de en las dos excepciones).
+    filtersIndex: filtersRows.map(getDraftProjection),
     meta: {
       visitDatePrefix,
       draftIndex  // <-- para la sección de búsqueda (solo lo usa la página web)
@@ -564,50 +600,205 @@ app.get('/api/files/:runId/:which', (req, res) => {
   res.send(entry.csv);
 });
 
+// Busca TARGET_PARTICIPANT en las 3 categorías de resultados de un run (Filters
+// generado, Missing in Specialty, Missing in Filters), usando comparación de
+// nombre normalizada (ver normalizeNameForMatch). Cada match se etiqueta con la
+// categoría donde se encontró — un mismo viaje puede aparecer en más de una
+// (p.ej. un trip "missing in Specialty" por definición también está en Filters).
+function searchParticipant(result, targetParticipant) {
+  const target = normalizeNameForMatch(targetParticipant);
+  if (!target) return [];
+
+  const buckets = [
+    { label: 'Filters', rows: result.filtersIndex || [] },
+    { label: 'Missing in Specialty', rows: result.trips_In_Filters_Not_In_Specialty || [] },
+    { label: 'Missing in Filters', rows: result.trips_In_Specialty_Not_In_Filters || [] }
+  ];
+
+  const matches = [];
+  for (const bucket of buckets) {
+    for (const row of bucket.rows) {
+      if (normalizeNameForMatch(row['Patient']) === target) {
+        matches.push({ ...row, 'Found in': bucket.label });
+      }
+    }
+  }
+  return matches;
+}
+
+function cellText(v) {
+  return v == null ? '' : String(v);
+}
+
+// Construye un elemento "Table" de Adaptive Cards 1.5 a partir de columnas +
+// filas. La primera fila son los encabezados (en negritas, firstRowAsHeaders
+// además le indica al host que las estilice como tal).
+function buildTableElement(headers, rows) {
+  const headerCells = headers.map(h => ({
+    type: 'TableCell',
+    items: [{ type: 'TextBlock', text: cellText(h), weight: 'bolder', wrap: true }]
+  }));
+  const dataRows = rows.map(row => ({
+    type: 'TableRow',
+    cells: headers.map(h => ({
+      type: 'TableCell',
+      items: [{ type: 'TextBlock', text: cellText(row[h]), wrap: true }]
+    }))
+  }));
+  return {
+    type: 'Table',
+    firstRowAsHeaders: true,
+    showGridLines: true,
+    columns: headers.map(() => ({ width: 1 })),
+    rows: [{ type: 'TableRow', cells: headerCells }, ...dataRows]
+  };
+}
+
+// Sección de una tabla de resultados (missingInSpecialty / missingInFilters) con
+// truncado a rowLimit filas. rowLimit puede bajar hasta 0 (lo controla el ajuste
+// de tamaño en buildTeamsMessageFitted) sin tocar las filas de Participant check.
+function buildResultsSection(titleText, rows, rowLimit) {
+  const elements = [
+    { type: 'TextBlock', text: titleText, weight: 'bolder', size: 'medium', wrap: true, spacing: 'medium' }
+  ];
+
+  if (!rows || rows.length === 0) {
+    elements.push({ type: 'TextBlock', text: 'No trips found in this category.', wrap: true, isSubtle: true });
+    return elements;
+  }
+
+  const shown = rows.slice(0, Math.max(0, rowLimit));
+  if (shown.length > 0) {
+    elements.push(buildTableElement(TEAMS_CARD_COLUMNS, shown));
+  }
+
+  if (rows.length > shown.length) {
+    elements.push({
+      type: 'TextBlock',
+      text: `Showing ${shown.length} of ${rows.length} trips. Download the full CSV for the complete list.`,
+      wrap: true,
+      isSubtle: true,
+      size: 'small'
+    });
+  }
+
+  return elements;
+}
+
+// Sección "Participant check" al inicio de la tarjeta. Nunca se trunca por
+// tamaño — ver buildTeamsMessageFitted.
+function buildParticipantCheckSection(result, targetParticipant) {
+  const matches = searchParticipant(result, targetParticipant);
+  const heading = {
+    type: 'TextBlock',
+    text: `Participant check: ${targetParticipant}`,
+    weight: 'bolder',
+    size: 'medium',
+    wrap: true,
+    spacing: 'medium'
+  };
+
+  if (matches.length === 0) {
+    return [
+      heading,
+      {
+        type: 'Container',
+        style: 'good',
+        bleed: true,
+        items: [
+          { type: 'TextBlock', text: `✅ No appointments found for ${targetParticipant}.`, wrap: true }
+        ]
+      }
+    ];
+  }
+
+  const participantColumns = [...TEAMS_CARD_COLUMNS, 'Found in'];
+  return [
+    heading,
+    {
+      type: 'Container',
+      style: 'attention',
+      bleed: true,
+      items: [
+        { type: 'TextBlock', text: `⚠️ ${matches.length} appointment(s) found for ${targetParticipant}`, wrap: true, weight: 'bolder' },
+        buildTableElement(participantColumns, matches)
+      ]
+    }
+  ];
+}
+
 // Construye el mensaje para un webhook de "Workflows" de Teams (tarjeta Adaptive Card).
 // Si el canal usa en cambio un conector clásico "Incoming Webhook", el formato
 // esperado es distinto (MessageCard) y habría que ajustar esta función.
-function buildTeamsMessage(run, baseUrl) {
+// rows1Limit/rows2Limit controlan cuántas filas se muestran en cada tabla de
+// resultados — los ajusta buildTeamsMessageFitted si la tarjeta no cabe en
+// MAX_CARD_BYTES.
+function buildTeamsMessage(run, baseUrl, rows1Limit, rows2Limit) {
   const r = run.result;
   const prefix = r.meta.visitDatePrefix;
+
+  const body = [
+    { type: 'TextBlock', text: 'Dispatch Run Summary', weight: 'bolder', size: 'large', wrap: true },
+    { type: 'TextBlock', text: `Run ${run.id}`, isSubtle: true, size: 'small', wrap: true },
+    {
+      type: 'FactSet',
+      facts: [
+        { title: 'Date', value: new Date(run.createdAt).toISOString() },
+        { title: 'Draft', value: `${r.draftRowCount} rows` },
+        { title: 'Specialty', value: `${r.specialtyRowCount} rows` },
+        { title: 'Filters generated', value: `${r.filtersRowCount} trips` },
+        { title: 'Missing in Specialty', value: String(r.trips_In_Filters_Not_In_Specialty.length) },
+        { title: 'Missing in Filters', value: String(r.trips_In_Specialty_Not_In_Filters.length) },
+        { title: 'Visit date prefix', value: prefix }
+      ]
+    },
+    ...buildParticipantCheckSection(r, TARGET_PARTICIPANT),
+    ...buildResultsSection('TRIPS FOUND IN FILTERS MISSING IN SPECIALTY', r.trips_In_Filters_Not_In_Specialty, rows1Limit),
+    ...buildResultsSection('TRIPS FOUND IN SPECIALTY MISSING IN FILTERS', r.trips_In_Specialty_Not_In_Filters, rows2Limit),
+    {
+      type: 'TextBlock',
+      text: '⚠️ Links available temporarily',
+      weight: 'bolder',
+      isSubtle: true,
+      size: 'small',
+      wrap: true
+    }
+  ];
+
   const card = {
     type: 'AdaptiveCard',
     $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
-    version: '1.4',
-    body: [
-      { type: 'TextBlock', text: 'Comparación Filters vs Specialty completada', weight: 'bolder', size: 'medium', wrap: true },
-      { type: 'TextBlock', text: `Run ${run.id}`, isSubtle: true, size: 'small', wrap: true },
-      {
-        type: 'FactSet',
-        facts: [
-          { title: 'Fecha', value: new Date(run.createdAt).toISOString() },
-          { title: 'Draft', value: `${r.draftRowCount} filas` },
-          { title: 'Specialty', value: `${r.specialtyRowCount} filas` },
-          { title: 'Filters generado', value: `${r.filtersRowCount} trips` },
-          { title: 'En Filters, no en Specialty', value: String(r.trips_In_Filters_Not_In_Specialty.length) },
-          { title: 'En Specialty, no en Filters', value: String(r.trips_In_Specialty_Not_In_Filters.length) },
-          { title: 'Prefijo de fecha (Visit Date)', value: prefix }
-        ]
-      },
-      {
-        type: 'TextBlock',
-        text: '⚠️ Links disponibles temporalmente',
-        weight: 'bolder',
-        isSubtle: true,
-        size: 'small',
-        wrap: true
-      }
-    ],
+    version: '1.5',
+    body,
     actions: [
-      { type: 'Action.OpenUrl', title: `Descargar ${prefix}Filters.csv`, url: `${baseUrl}/api/files/${run.id}/filters` },
-      { type: 'Action.OpenUrl', title: 'Descargar exceptions (Filters→Specialty)', url: `${baseUrl}/api/files/${run.id}/missingInSpecialty` },
-      { type: 'Action.OpenUrl', title: 'Descargar exceptions (Specialty→Filters)', url: `${baseUrl}/api/files/${run.id}/missingInFilters` }
+      { type: 'Action.OpenUrl', title: `Download ${prefix}Filters.csv`, url: `${baseUrl}/api/files/${run.id}/filters` },
+      { type: 'Action.OpenUrl', title: 'Download exceptions (Filters→Specialty)', url: `${baseUrl}/api/files/${run.id}/missingInSpecialty` },
+      { type: 'Action.OpenUrl', title: 'Download exceptions (Specialty→Filters)', url: `${baseUrl}/api/files/${run.id}/missingInFilters` }
     ]
   };
   return {
     type: 'message',
     attachments: [{ contentType: 'application/vnd.microsoft.card.adaptive', content: card }]
   };
+}
+
+// Envuelve buildTeamsMessage ajustando rows1Limit/rows2Limit hacia abajo (nunca
+// las filas de Participant check) hasta que la tarjeta quepa en MAX_CARD_BYTES,
+// el límite real de Teams/Power Automate.
+function buildTeamsMessageFitted(run, baseUrl) {
+  let rows1 = MAX_TABLE_ROWS;
+  let rows2 = MAX_TABLE_ROWS;
+  let message = buildTeamsMessage(run, baseUrl, rows1, rows2);
+  let size = Buffer.byteLength(JSON.stringify(message), 'utf8');
+
+  while (size > MAX_CARD_BYTES && (rows1 > 0 || rows2 > 0)) {
+    if (rows1 >= rows2 && rows1 > 0) rows1--;
+    else if (rows2 > 0) rows2--;
+    message = buildTeamsMessage(run, baseUrl, rows1, rows2);
+    size = Buffer.byteLength(JSON.stringify(message), 'utf8');
+  }
+
+  return message;
 }
 
 // POST /api/publish — body: { "runId": "..." }
@@ -632,7 +823,7 @@ app.post('/api/publish', async (req, res) => {
 
   try {
     const baseUrl = buildBaseUrl(req);
-    const message = buildTeamsMessage(run, baseUrl);
+    const message = buildTeamsMessageFitted(run, baseUrl);
     const resp = await fetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -652,7 +843,24 @@ app.post('/api/publish', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3200;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`CSV Diff app V2 corriendo en http://localhost:${PORT}`);
-});
+// Guard para poder hacer require('./server.js') desde scripts (p.ej.
+// scripts/card-preview.js) sin levantar el servidor HTTP.
+if (require.main === module) {
+  const PORT = process.env.PORT || 3200;
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`CSV Diff app V2 corriendo en http://localhost:${PORT}`);
+  });
+}
+
+module.exports = {
+  app,
+  processFiles,
+  buildTeamsMessage,
+  buildTeamsMessageFitted,
+  searchParticipant,
+  normalizeNameForMatch,
+  TARGET_PARTICIPANT,
+  TEAMS_CARD_COLUMNS,
+  MAX_TABLE_ROWS,
+  MAX_CARD_BYTES
+};

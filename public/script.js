@@ -343,20 +343,6 @@ function runSearchSingle(query) {
   });
 }
 
-// Búsqueda combinada (unión de varios criterios)
-function runSearchCombined(queries) {
-  const seen = new Set();
-  const out = [];
-  for (const q of queries) {
-    const rows = runSearchSingle(q);
-    for (const r of rows) {
-      const key = `${r['PACE MRN']}|${r['Patient']}|${r['Patient Address']}|${r['Time']}`;
-      if (!seen.has(key)) { seen.add(key); out.push(r); }
-    }
-  }
-  return out;
-}
-
 searchBtn.addEventListener('click', () => {
   const val = searchInput.value || '';
   const rows = runSearchSingle(val);
@@ -440,8 +426,12 @@ form.addEventListener('submit', async (e) => {
     publishTeamsBtn.disabled = !CURRENT_RUN_ID;
 
     // --- BÚSQUEDA AUTOMÁTICA TRAS "Procesar" ---
-    // Criterios: Patient="Caro" y PACE MRN="SDP10035365"
-    const autoRows = runSearchCombined(['Caro', 'SDP10035365']);
+    // Precarga el campo con TARGET_PARTICIPANT (configurable por entorno, mismo
+    // valor que usa la tarjeta de Teams) y reutiliza la lógica de búsqueda ya
+    // usada por el botón "Buscar". El usuario puede cambiar el criterio después.
+    const targetParticipant = window.__TARGET_PARTICIPANT__ || '';
+    searchInput.value = targetParticipant;
+    const autoRows = runSearchSingle(targetParticipant);
     renderSearchTable(autoRows);
 
     statusEl.textContent = i18n[lang].done
